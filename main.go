@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -52,18 +53,22 @@ type AgencyMonthlyInfo struct {
 }
 
 func main() {
+	if len(os.Args) != 2 {
+		log.Fatal("Parâmetros inválidos.")
+		return
+	}
 	if err := godotenv.Load(".env"); err != nil {
-		log.Fatal("Error loading .env file")
+		log.Fatal("Erro ao carregar arquivo .env.")
 	}
 
 	var c config
 	if err := envconfig.Process("", &c); err != nil {
-		log.Fatal("Error loading config values from .env: ", err.Error())
+		log.Fatal("Erro ao carregar parâmetros do arquivo .env: ", err.Error())
 	}
 
 	client, err := mongo.NewClient(options.Client().ApplyURI(c.MongoURI))
 	if err != nil {
-		log.Fatal("Error connecting with database: ", err.Error())
+		log.Fatal("Erro ao se conectar com o banco de dados: ", err.Error())
 	}
 
 	ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
@@ -81,28 +86,39 @@ func main() {
 
 	collection := client.Database(c.DBName).Collection(c.MongoMICol)
 
-	res, err := collection.Find(ctx, bson.D{})
+	ag := os.Args[1]
+
+	res, err := collection.Find(ctx, bson.M{"aid": ag})
 	if err != nil {
-		log.Fatal("Error getting result")
+		log.Fatal("Erro ao consultar informações mensais dos órgãos: ", err.Error())
 	}
 	defer res.Close(ctx)
+	fmt.Print("Atualizando índice de transparência...\n")
 	for res.Next(ctx) {
 		var mi AgencyMonthlyInfo
 		if err = res.Decode(&mi); err != nil {
-			log.Fatal("Error getting mi", err)
+			log.Fatal("Erro ao obter metadados.", err)
 		}
 		var score = Score{
-			Score:             calcScore(*mi.Meta),
-			CompletenessScore: calcCompletenessScore(*mi.Meta),
-			EasinessScore:     calcEasinessScore(*mi.Meta),
+			Score:             0,
+			CompletenessScore: 0,
+			EasinessScore:     0,
+		}
+		if mi.Meta != nil {
+			score = Score{
+				Score:             calcScore(*mi.Meta),
+				CompletenessScore: calcCompletenessScore(*mi.Meta),
+				EasinessScore:     calcEasinessScore(*mi.Meta),
+			}
 		}
 		filter := bson.M{"_id": mi.ID}
 		update := bson.M{"$set": bson.M{"score": score}}
 		up, err := collection.UpdateOne(ctx, filter, update)
 		if err != nil {
-			log.Fatal("Error updating data", err)
+			log.Fatal("Erro ao atualizar índice", err)
 		}
-		fmt.Printf("Updated %v documents\n", up.ModifiedCount)
+		fmt.Printf("%s: %d/%d: %v docs\n", mi.AgencyID, mi.Month, mi.Year, up.ModifiedCount)
+		time.Sleep(1000 * time.Millisecond)
 	}
 }
 
