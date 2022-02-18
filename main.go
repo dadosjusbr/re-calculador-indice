@@ -2,15 +2,17 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
-	"os"
 	"time"
 
+	"github.com/dadosjusbr/indice"
+	"github.com/dadosjusbr/proto/coleta"
+	"github.com/dadosjusbr/storage"
 	"github.com/joho/godotenv"
 	"github.com/kelseyhightower/envconfig"
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -22,41 +24,18 @@ type config struct {
 	MongoAgCol string `envconfig:"MONGODB_AGCOL" required:"true"`
 }
 
-type Meta struct {
-	NoLoginRequired   bool   `json:"no_login_required,omitempty" bson:"no_login_required,omitempty"`
-	NoCaptchaRequired bool   `json:"no_captcha_required,omitempty" bson:"no_captcha_required,omitempty"`
-	Access            string `json:"access,omitempty" bson:"access,omitempty"`
-	Extension         string `json:"extension,omitempty" bson:"extension,omitempty"`
-	StrictlyTabular   bool   `json:"strictly_tabular,omitempty" bson:"strictly_tabular,omitempty"`
-	ConsistentFormat  bool   `json:"consistent_format,omitempty" bson:"consistent_format,omitempty"`
-	HaveEnrollment    bool   `json:"have_enrollment,omitempty" bson:"have_enrollment,omitempty"`
-	ThereIsACapacity  bool   `json:"there_is_a_capacity,omitempty" bson:"there_is_a_capacity,omitempty"`
-	HasPosition       bool   `json:"has_position,omitempty" bson:"has_position,omitempty"`
-	BaseRevenue       string `json:"base_revenue,omitempty" bson:"base_revenue,omitempty"`
-	OtherRecipes      string `json:"other_recipes,omitempty" bson:"other_recipes,omitempty"`
-	Expenditure       string `json:"expenditure,omitempty" bson:"expenditure,omitempty"`
-}
-
-type Score struct {
-	Score             float64 `json:"score" bson:"score"`
-	CompletenessScore float64 `json:"completeness_score" bson:"completeness_score"`
-	EasinessScore     float64 `json:"easiness_score" bson:"easiness_score"`
-}
-
-type AgencyMonthlyInfo struct {
-	ID             primitive.ObjectID `json:"id,omitempty" bson:"_id,omitempty"`
-	AgencyID       string             `json:"aid,omitempty" bson:"aid,omitempty"`
-	Month          int                `json:"month,omitempty" bson:"month,omitempty"`
-	Year           int                `json:"year,omitempty" bson:"year,omitempty"`
-	Meta           *Meta              `json:"meta,omitempty" bson:"meta,omitempy"`
-	ExectionTimeMs float64            `json:"exection_time_ms,omitempty" bson:"exection_time_ms,omitempty"`
-}
+var (
+	aid  = flag.String("aid", "", "Órgão")
+	year = flag.Int("year", 2021, "Ano")
+)
 
 func main() {
-	if len(os.Args) != 2 {
-		log.Fatal("Parâmetros inválidos.")
-		return
+	flag.Parse()
+
+	if *aid == "" {
+		log.Fatal("Flag aid obrigatória")
 	}
+
 	if err := godotenv.Load(".env"); err != nil {
 		log.Fatal("Erro ao carregar arquivo .env.")
 	}
@@ -78,101 +57,52 @@ func main() {
 	}
 	defer client.Disconnect(ctx)
 
-	databases, err := client.ListDatabaseNames(ctx, bson.M{})
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println(databases)
-
 	collection := client.Database(c.DBName).Collection(c.MongoMICol)
 
-	ag := os.Args[1]
-
-	res, err := collection.Find(ctx, bson.M{"aid": ag})
+	res, err := collection.Find(ctx, bson.M{"aid": *aid, "year": *year})
 	if err != nil {
 		log.Fatal("Erro ao consultar informações mensais dos órgãos: ", err.Error())
 	}
 	defer res.Close(ctx)
-	fmt.Print("Atualizando índice de transparência...\n")
+
+	fmt.Printf("Atualizando índice de transparência para %s em %d...\n", *aid, *year)
 	for res.Next(ctx) {
-		var mi AgencyMonthlyInfo
+		var mi storage.AgencyMonthlyInfo
 		if err = res.Decode(&mi); err != nil {
-			log.Fatal("Erro ao obter metadados.", err)
+			log.Fatalf("[%s/%d/%d] Erro ao obter metadados: %w", mi.AgencyID, mi.Year, mi.Month, err)
 		}
-		var score = Score{
-			Score:             0,
-			CompletenessScore: 0,
-			EasinessScore:     0,
+		fmt.Printf("%s: %d/%d... ", mi.AgencyID, mi.Month, mi.Year)
+		// Quando não houver o dado ou problema na coleta
+		if mi.Meta == nil {
+			continue
 		}
-		if mi.Meta != nil {
-			score = Score{
-				Score:             calcScore(*mi.Meta),
-				CompletenessScore: calcCompletenessScore(*mi.Meta),
-				EasinessScore:     calcEasinessScore(*mi.Meta),
-			}
-		}
-		filter := bson.M{"_id": mi.ID}
-		update := bson.M{"$set": bson.M{"score": score}}
+		// a operação inversa é feita no armazenador
+		var score = indice.CalcScore(coleta.Metadados{
+			TemMatricula:        mi.Meta.HaveEnrollment,
+			TemLotacao:          mi.Meta.ThereIsACapacity,
+			TemCargo:            mi.Meta.HasPosition,
+			ReceitaBase:         coleta.Metadados_OpcoesDetalhamento(coleta.Metadados_OpcoesDetalhamento_value[mi.Meta.BaseRevenue]),
+			OutrasReceitas:      coleta.Metadados_OpcoesDetalhamento(coleta.Metadados_OpcoesDetalhamento_value[mi.Meta.OtherRecipes]),
+			Despesas:            coleta.Metadados_OpcoesDetalhamento(coleta.Metadados_OpcoesDetalhamento_value[mi.Meta.Expenditure]),
+			NaoRequerLogin:      mi.Meta.NoLoginRequired,
+			NaoRequerCaptcha:    mi.Meta.NoCaptchaRequired,
+			Acesso:              coleta.Metadados_FormaDeAcesso(coleta.Metadados_FormaDeAcesso_value[mi.Meta.Access]),
+			FormatoConsistente:  mi.Meta.ConsistentFormat,
+			EstritamenteTabular: mi.Meta.StrictlyTabular,
+		})
+		filter := bson.M{"aid": mi.AgencyID, "year": mi.Year, "month": mi.Month}
+		update := bson.M{"$set": bson.M{"score": storage.Score{
+			Score:             score.Score,
+			CompletenessScore: score.CompletenessScore,
+			EasinessScore:     score.EasinessScore,
+		}}}
 		up, err := collection.UpdateOne(ctx, filter, update)
 		if err != nil {
 			log.Fatal("Erro ao atualizar índice", err)
 		}
-		fmt.Printf("%s: %d/%d: %v docs\n", mi.AgencyID, mi.Month, mi.Year, up.ModifiedCount)
-		time.Sleep(1000 * time.Millisecond)
+		fmt.Printf("%v docs\n", up.ModifiedCount)
+		fmt.Printf("%f %f %f\n", score.Score, score.CompletenessScore, score.EasinessScore)
+		time.Sleep(1 * time.Second)
 	}
-}
-
-func calcCriteria(criteria bool, value float64) float64 {
-	if criteria {
-		return value
-	}
-	return 0
-}
-
-func calcStringCriteria(criteria string, values map[string]float64) float64 {
-	for k := range values {
-		if criteria == k {
-			return values[k]
-		}
-	}
-	return 0
-}
-
-func calcCompletenessScore(meta Meta) float64 {
-	var score float64 = 0
-	var options = map[string]float64{"SUMARIZADO": 0.5, "DETALHADO": 1}
-
-	score = score + calcCriteria(meta.ThereIsACapacity, 1)
-	score = score + calcCriteria(meta.HasPosition, 1)
-	score = score + calcCriteria(meta.HasPosition, 1)
-	score = score + calcStringCriteria(meta.BaseRevenue, options)
-	score = score + calcStringCriteria(meta.OtherRecipes, options)
-	score = score + calcStringCriteria(meta.Expenditure, options)
-
-	return score / 6
-}
-
-func calcEasinessScore(meta Meta) float64 {
-	var score float64 = 0
-	var options = map[string]float64{
-		"ACESSO_DIRETO":          1,
-		"AMIGAVEL_PARA_RASPAGEM": 0.5,
-		"RASPAGEM_DIFICULTADA":   0.25}
-
-	score = score + calcCriteria(meta.NoLoginRequired, 1)
-	score = score + calcCriteria(meta.NoCaptchaRequired, 1)
-	score = score + calcStringCriteria(meta.Access, options)
-	score = score + calcCriteria(meta.ConsistentFormat, 1)
-	score = score + calcCriteria(meta.StrictlyTabular, 1)
-
-	return score / 5
-}
-
-func calcScore(meta Meta) float64 {
-	var score = 0.0
-	var completeness = calcCompletenessScore(meta)
-	var easiness = calcEasinessScore(meta)
-	score = (completeness + easiness) / 2
-
-	return score
+	fmt.Print("Fim.\n")
 }
