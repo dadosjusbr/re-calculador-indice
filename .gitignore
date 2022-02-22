@@ -4,6 +4,7 @@
 *.dll
 *.so
 *.dylib
+re-calculador-indice
 
 # Test binary, built with `go test -c`
 *.test
