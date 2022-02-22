@@ -64,8 +64,8 @@ func main() {
 		log.Fatal("Erro ao consultar informações mensais dos órgãos: ", err.Error())
 	}
 	defer res.Close(ctx)
-
 	fmt.Printf("Atualizando índice de transparência para %s em %d...\n", *aid, *year)
+	var operations []mongo.WriteModel
 	for res.Next(ctx) {
 		var mi storage.AgencyMonthlyInfo
 		if err = res.Decode(&mi); err != nil {
@@ -74,6 +74,7 @@ func main() {
 		fmt.Printf("%s: %d/%d... ", mi.AgencyID, mi.Month, mi.Year)
 		// Quando não houver o dado ou problema na coleta
 		if mi.Meta == nil {
+			fmt.Print("--\n")
 			continue
 		}
 		// a operação inversa é feita no armazenador
@@ -96,13 +97,15 @@ func main() {
 			CompletenessScore: score.CompletenessScore,
 			EasinessScore:     score.EasinessScore,
 		}}}
-		up, err := collection.UpdateOne(ctx, filter, update)
-		if err != nil {
-			log.Fatal("Erro ao atualizar índice", err)
-		}
-		fmt.Printf("%v docs\n", up.ModifiedCount)
+		operation := mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(update)
+		operations = append(operations, operation)
 		fmt.Printf("%f %f %f\n", score.Score, score.CompletenessScore, score.EasinessScore)
-		time.Sleep(1 * time.Second)
 	}
-	fmt.Print("Fim.\n")
+	results, err := collection.BulkWrite(ctx, operations)
+	if err != nil {
+		log.Fatal("Erro ao atualizar índice", err)
+	}
+
+	fmt.Printf("Registros atualizados: %d\n", results.ModifiedCount)
+	fmt.Print("\nFim.\n")
 }
