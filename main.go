@@ -104,7 +104,7 @@ func main() {
 	}
 	results, err := collection.BulkWrite(ctx, operations)
 	if err != nil {
-		log.Fatal("Erro ao atualizar índice", err)
+		log.Fatalf("Erro ao atualizar índice [%s/%d]: %v", *aid, *year, err)
 	}
 
 	fmt.Printf("Registros atualizados: %d\n\n", results.ModifiedCount)
