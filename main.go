@@ -102,10 +102,14 @@ func main() {
 		operations = append(operations, operation)
 		fmt.Printf("%f %f %f\n", score.Score, score.CompletenessScore, score.EasinessScore)
 	}
-	results, err := collection.BulkWrite(ctx, operations)
-	if err != nil {
-		log.Fatalf("Erro ao atualizar índice [%s/%d]: %v", *aid, *year, err)
+	if len(operations) > 0 {
+		results, err := collection.BulkWrite(ctx, operations)
+		if err != nil {
+			log.Fatalf("Erro ao atualizar índice [%s/%d]: %v", *aid, *year, err)
+		}
+		fmt.Printf("Registros atualizados: %d\n\n", results.ModifiedCount)
+	} else {
+		fmt.Print("Não há atualizações a fazer.\n\n")
 	}
 
-	fmt.Printf("Registros atualizados: %d\n\n", results.ModifiedCount)
 }
