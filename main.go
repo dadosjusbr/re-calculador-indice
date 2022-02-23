@@ -64,7 +64,8 @@ func main() {
 		log.Fatal("Erro ao consultar informações mensais dos órgãos: ", err.Error())
 	}
 	defer res.Close(ctx)
-	fmt.Printf("Atualizando índice de transparência para %s em %d...\n", *aid, *year)
+	currentTime := time.Now()
+	fmt.Printf("%s Atualizando índice para [%s] em [%d]...\n", currentTime.Format("2006-02-01 15:04:05"), *aid, *year)
 	var operations []mongo.WriteModel
 	for res.Next(ctx) {
 		var mi storage.AgencyMonthlyInfo
@@ -106,6 +107,5 @@ func main() {
 		log.Fatal("Erro ao atualizar índice", err)
 	}
 
-	fmt.Printf("Registros atualizados: %d\n", results.ModifiedCount)
-	fmt.Print("\nFim.\n")
+	fmt.Printf("Registros atualizados: %d\n\n", results.ModifiedCount)
 }
